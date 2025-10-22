@@ -326,7 +326,7 @@ class OrderWithRespectToReorderTests(TestCase):
 
     def test_reorder_when_field_value_changed(self):
         self.u0_a2.user = self.u1
-        with assertNumQueries(self, 3):
+        with assertNumQueries(self, 4):
             self.u0_a2.save()
 
         self.assertSequenceEqual(
@@ -987,6 +987,24 @@ class OrderWithRespectToRelatedModelFieldTests(TestCase):
         self.u2_g1_i1 = self.u2_g1.items.create()
         self.u1_g1_i1 = self.u1_g1.items.create()
         self.u1_g2_i1 = self.u1_g2.items.create()
+
+    def test_query_count_on_create_model(self):
+        with self.assertNumQueries(2):
+            # 1 for calculating the order, 1 for inserting the model
+            self.u1_g1.items.create()
+
+    def test_query_count_on_save(self):
+        with self.assertNumQueries(3):
+            # 2 to check for wrt field changes, 1 to update the model.
+            self.u1_g1_i1.save()
+
+    def test_query_count_on_qs(self):
+        with self.assertNumQueries(1):
+            list(GroupedItem.objects.all())
+
+    def test_query_count_on_select_related_qs(self):
+        with self.assertNumQueries(1):
+            list(GroupedItem.objects.select_related("group__user").all())
 
     def test_saved_order(self):
         self.assertSequenceEqual(
