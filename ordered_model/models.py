@@ -2,7 +2,7 @@ from functools import partial, reduce
 
 from django.core import checks
 from django.core.exceptions import ObjectDoesNotExist, FieldDoesNotExist
-from django.db import models
+from django.db import models, router, transaction
 from django.db.models import Max, Min, F
 from django.db.models.fields.related import ForeignKey
 from django.db.models.constants import LOOKUP_SEP
@@ -27,6 +27,9 @@ def get_lookup_value(obj, wrt_field, use_fkid=True):
             else:
                 mc = f.remote_field.model
                 obj = getattr(obj, p)
+                if obj is None:
+                    # nullable intermediate relation, there is nothing to traverse
+                    return None
 
     except ObjectDoesNotExist:
         return None
@@ -139,12 +142,52 @@ class OrderedModelBase(models.Model):
 
     def __init__(self, *args, **kwargs):
         super(OrderedModelBase, self).__init__(*args, **kwargs)
-        self._original_wrt_map = self._wrt_map()
+        # Only the local end of each order_with_respect_to path is captured here.
+        # Resolving a path such as "group__user" traverses a relation and hits the
+        # database, and __init__ runs once per row loaded from a queryset, so the
+        # full map is only resolved when save() sees a root value change.
+        self._original_wrt_roots = self._wrt_roots()
 
     def _wrt_map(self):
         d = {}
         for order_wrt_name in self.get_order_with_respect_to():
             d[order_wrt_name] = get_lookup_value(self, order_wrt_name, use_fkid=True)
+        return d
+
+    def _wrt_roots(self):
+        # values of the local (first) field of each order_with_respect_to path, which
+        # never requires traversing a relation
+        d = {}
+        for order_wrt_name in self.get_order_with_respect_to():
+            root = order_wrt_name.split(LOOKUP_SEP)[0]
+            d[order_wrt_name] = get_lookup_value(self, root, use_fkid=True)
+        return d
+
+    def _resolve_wrt_map(self, roots):
+        # expand a {path: local root value} map into a full wrt map, following the
+        # relations from the given root value rather than from this instance's own
+        # (possibly already reassigned) related objects
+        d = {}
+        for order_wrt_name, root_value in roots.items():
+            path = order_wrt_name.split(LOOKUP_SEP)
+            if len(path) == 1:
+                d[order_wrt_name] = root_value
+                continue
+            f = self._meta.get_field(path[0])
+            root_obj = None
+            if root_value is not None and isinstance(f, ForeignKey):
+                root_obj = (
+                    f.remote_field.model._base_manager.filter(
+                        **{f.target_field.name: root_value}
+                    )
+                    .order_by()
+                    .first()
+                )
+            d[order_wrt_name] = (
+                get_lookup_value(root_obj, LOOKUP_SEP.join(path[1:]), use_fkid=True)
+                if root_obj is not None
+                else None
+            )
         return d
 
     def _get_related_objects(self):
@@ -223,31 +266,68 @@ class OrderedModelBase(models.Model):
         """
         return self.get_ordering_queryset().above_instance(self).first()
 
+    def _get_write_db(self, using=None):
+        return using or router.db_for_write(self.__class__, instance=self)
+
+    def _add_order_to_update_fields(self, args, kwargs):
+        # the order field was just (re)computed, so it has to be written out even
+        # when the caller restricted the write with update_fields
+        order_field_name = self.order_field_name
+        if len(args) >= 4 and args[3] is not None:
+            args = list(args)
+            args[3] = frozenset(args[3]) | {order_field_name}
+            args = tuple(args)
+        elif kwargs.get("update_fields") is not None:
+            kwargs["update_fields"] = frozenset(kwargs["update_fields"]) | {
+                order_field_name
+            }
+        return args, kwargs
+
     def save(self, *args, **kwargs):
         order_field_name = self.order_field_name
-        wrt_changed = self._wrt_map() != self._original_wrt_map
+        wrt_roots = self._wrt_roots()
+        original_wrt_map = None
+        wrt_changed = wrt_roots != self._original_wrt_roots
+        if wrt_changed:
+            # the local values changed, but when the path traverses a relation the
+            # ordering scope itself may still be the same (eg. two groups, one user)
+            original_wrt_map = self._resolve_wrt_map(self._original_wrt_roots)
+            wrt_changed = self._wrt_map() != original_wrt_map
 
-        if wrt_changed and getattr(self, order_field_name) is not None:
-            # do delete-like upshuffle using original_wrt values!
-            qs = self.get_ordering_queryset(wrt=self._original_wrt_map)
-            qs.above_instance(self).decrease_order()
+        if not (getattr(self, order_field_name) is None or wrt_changed):
+            # nothing to re-number, save as usual
+            super().save(*args, **kwargs)
+            self._original_wrt_roots = wrt_roots
+            return
 
-        if getattr(self, order_field_name) is None or wrt_changed:
+        # re-numbering the siblings and writing this row must not be left half done.
+        # savepoint=False keeps this off the query path of every create, as
+        # Model.save_base() does for its own related writes
+        with transaction.atomic(
+            using=self._get_write_db(kwargs.get("using")), savepoint=False
+        ):
+            if wrt_changed and getattr(self, order_field_name) is not None:
+                # do delete-like upshuffle using original_wrt values!
+                qs = self.get_ordering_queryset(wrt=original_wrt_map)
+                qs.above_instance(self).decrease_order()
+
             order = self.get_ordering_queryset().get_next_order()
             setattr(self, order_field_name, order)
-        super().save(*args, **kwargs)
+            args, kwargs = self._add_order_to_update_fields(args, kwargs)
+            super().save(*args, **kwargs)
 
-        self._original_wrt_map = self._wrt_map()
+        self._original_wrt_roots = wrt_roots
 
     def delete(self, *args, extra_update=None, **kwargs):
         # Flag re-ordering performed so that post_delete signal
         # does not duplicate the re-ordering. See signals.py
         self._was_deleted_via_delete_method = True
 
-        qs = self.get_ordering_queryset()
         extra_update = {} if extra_update is None else extra_update
-        qs.above_instance(self).decrease_order(**extra_update)
-        return super().delete(*args, **kwargs)
+        with transaction.atomic(using=self._get_write_db(kwargs.get("using"))):
+            qs = self.get_ordering_queryset()
+            qs.above_instance(self).decrease_order(**extra_update)
+            return super().delete(*args, **kwargs)
 
     def swap(self, replacement):
         """
@@ -262,8 +342,9 @@ class OrderedModelBase(models.Model):
         )
         setattr(self, order_field_name, replacement_order)
         setattr(replacement, order_field_name, order)
-        self.save()
-        replacement.save()
+        with transaction.atomic(using=self._get_write_db()):
+            self.save()
+            replacement.save()
 
     def up(self):
         """
@@ -285,6 +366,10 @@ class OrderedModelBase(models.Model):
         """
         Move object to a certain position, updating all affected objects to move accordingly up or down.
         """
+        if order is None:
+            # no position to move to, eg. top()/bottom() on an empty ordering scope
+            return
+
         if not isinstance(order, int):
             raise TypeError(
                 "Order value must be set using an 'int', not using a '{0}'.".format(
@@ -293,21 +378,22 @@ class OrderedModelBase(models.Model):
             )
 
         order_field_name = self.order_field_name
-        if order is None or getattr(self, order_field_name) == order:
+        if getattr(self, order_field_name) == order:
             # object is already at desired position
             return
-        qs = self.get_ordering_queryset()
         extra_update = {} if extra_update is None else extra_update
-        if getattr(self, order_field_name) > order:
-            qs.below_instance(self).above(order, inclusive=True).increase_order(
-                **extra_update
-            )
-        else:
-            qs.above_instance(self).below(order, inclusive=True).decrease_order(
-                **extra_update
-            )
-        setattr(self, order_field_name, order)
-        self.save()
+        with transaction.atomic(using=self._get_write_db()):
+            qs = self.get_ordering_queryset()
+            if getattr(self, order_field_name) > order:
+                qs.below_instance(self).above(order, inclusive=True).increase_order(
+                    **extra_update
+                )
+            else:
+                qs.above_instance(self).below(order, inclusive=True).decrease_order(
+                    **extra_update
+                )
+            setattr(self, order_field_name, order)
+            self.save()
 
     def above(self, ref, extra_update=None):
         """
@@ -363,6 +449,21 @@ class OrderedModelBase(models.Model):
                     hint="If you have overwritten Meta, try inheriting with Meta(OrderedModel.Meta).",
                     obj=str(cls.__qualname__),
                     id="ordered_model.E001",
+                )
+            )
+        elif cls.order_field_name and cls.order_field_name not in [
+            f.lstrip("-") for f in ordering if isinstance(f, str)
+        ]:
+            errors.append(
+                checks.Warning(
+                    "OrderedModelBase subclass Meta.ordering does not include the order field '{0}'. Rows within an ordering scope are then returned in an arbitrary order, so moving and re-numbering operations act on an undefined sequence.".format(
+                        cls.order_field_name
+                    ),
+                    hint="Add '{0}' to Meta.ordering, usually as the last entry.".format(
+                        cls.order_field_name
+                    ),
+                    obj=str(cls.__qualname__),
+                    id="ordered_model.W007",
                 )
             )
         owrt = getattr(cls, "order_with_respect_to")

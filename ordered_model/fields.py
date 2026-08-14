@@ -18,9 +18,20 @@ def create_sorted_forward_many_to_many_manager(superclass, rel, reverse):
             qs = super().get_queryset()
             m = rel.through._meta
             if m.ordering:
-                # import pdb; pdb.set_trace()
-                ors = [m.model_name + "__" + field for field in m.ordering]
-                qs = qs.order_by(*ors)
+                ors = []
+                for field in m.ordering:
+                    if not isinstance(field, str):
+                        # expression based ordering cannot be rewritten as a lookup
+                        # path through the through model
+                        continue
+                    if field == "?":
+                        ors.append(field)
+                    elif field.startswith("-"):
+                        ors.append("-" + m.model_name + "__" + field[1:])
+                    else:
+                        ors.append(m.model_name + "__" + field)
+                if ors:
+                    qs = qs.order_by(*ors)
             return qs
 
     return SortedManyRelatedManager

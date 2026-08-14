@@ -10,7 +10,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("model_name", type=str, nargs="*")
-        parser.add_argument("--batch_size", type=int, nargs=1, default=None)
+        parser.add_argument("--batch_size", type=int, default=None)
 
     def handle(self, *args, **options):
         """
@@ -48,12 +48,10 @@ class Command(BaseCommand):
     def reorder(self, model):
         owrt = model.get_order_with_respect_to()
         if owrt:
-            rel_kwargs = dict([("{}__isnull".format(k), False) for k in owrt])
+            # NULL values form an ordering scope of their own and have to be
+            # re-ordered too, so they are not filtered out here
             relation_to_list = (
-                model.objects.order_by(*owrt)
-                .values_list(*owrt)
-                .filter(**rel_kwargs)
-                .distinct()
+                model.objects.order_by(*owrt).values_list(*owrt).distinct()
             )
             for relation_to in relation_to_list:
                 kwargs = dict([(k, v) for k, v in zip(owrt, relation_to)])

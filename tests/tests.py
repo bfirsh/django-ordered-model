@@ -5,7 +5,7 @@ from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.core import checks
 from django.db import models
-from django.db.models.signals import post_delete
+from django.db.models.signals import post_delete, post_save
 from django.dispatch import Signal
 from django.utils.timezone import now
 from django.urls import reverse
@@ -16,7 +16,7 @@ from django import VERSION
 
 from rest_framework.test import APIRequestFactory, APITestCase
 from rest_framework import status
-from tests.drf import ItemViewSet, router
+from tests.drf import ItemSerializer, ItemViewSet, router
 from tests.utils import assertNumQueries
 
 from ordered_model.models import OrderedModel, OrderedModelManager, OrderedModelQuerySet
@@ -35,11 +35,14 @@ from tests.models import (
     Topping,
     PizzaToppingsThroughModel,
     PizzaOM2MToppingsThroughModel,
+    PizzaOM2MDesc,
+    PizzaOM2MDescToppingsThroughModel,
     BaseQuestion,
     OpenQuestion,
     MultipleChoiceQuestion,
     ItemGroup,
     GroupedItem,
+    NullableGroupedItem,
     TestUser,
     CascadedParentModel,
     CascadedOrderedModel,
@@ -1523,6 +1526,26 @@ class ChecksTest(SimpleTestCase):
 
         self.assertEqual(checks.run_checks(app_configs=self.apps.get_app_configs()), [])
 
+    def test_ordering_without_the_order_field(self):
+        class TestModel3(OrderedModel):
+            name = models.CharField(max_length=100)
+
+            class Meta:
+                ordering = ("name",)
+
+        self.maxDiff = None
+        self.assertEqual(
+            checks.run_checks(app_configs=self.apps.get_app_configs()),
+            [
+                checks.Warning(
+                    msg="OrderedModelBase subclass Meta.ordering does not include the order field 'order'. Rows within an ordering scope are then returned in an arbitrary order, so moving and re-numbering operations act on an undefined sequence.",
+                    hint="Add 'order' to Meta.ordering, usually as the last entry.",
+                    obj="ChecksTest.test_ordering_without_the_order_field.<locals>.TestModel3",
+                    id="ordered_model.W007",
+                )
+            ],
+        )
+
     def test_bad_owrt(self):
         class TestModel(OrderedModel):
             order_with_respect_to = 7
@@ -1759,3 +1782,202 @@ class ParentChildModelTests(TestCase):
         assert child2.order == 0
         assert child3.order == 1
         assert child4.order == 2
+
+
+class RegressionTests(TestCase):
+    """
+    Regression tests for issues found in the model layer.
+    """
+
+    def test_save_with_update_fields_persists_recomputed_order(self):
+        # moving a row into another ordering scope recomputes its order, that new
+        # value has to be written even when the caller passed update_fields
+        pizza1 = Pizza.objects.create(name="pizza1")
+        pizza2 = Pizza.objects.create(name="pizza2")
+        toppings = [Topping.objects.create(name="t{}".format(i)) for i in range(4)]
+        moved = PizzaToppingsThroughModel.objects.create(
+            pizza=pizza1, topping=toppings[0]
+        )
+        for topping in toppings[1:]:
+            PizzaToppingsThroughModel.objects.create(pizza=pizza2, topping=topping)
+
+        moved.pizza = pizza2
+        moved.save(update_fields=["pizza"])
+
+        self.assertEqual(moved.order, 3)
+        self.assertSequenceEqual(
+            PizzaToppingsThroughModel.objects.filter(pizza=pizza2).values_list(
+                "order", flat=True
+            ),
+            [0, 1, 2, 3],
+        )
+
+    def test_to_ignores_a_none_position(self):
+        # top()/bottom() on an empty ordering scope have nowhere to move to
+        item = Item(name="lonely")
+        item.top()
+        item.bottom()
+        self.assertIsNone(item.order)
+
+    def test_instantiation_does_not_traverse_relations(self):
+        user = TestUser.objects.create()
+        group = ItemGroup.objects.create(user=user)
+        for _ in range(5):
+            GroupedItem.objects.create(group=group)
+
+        # loading the rows must not resolve the "group__user" path per instance
+        with assertNumQueries(self, 1):
+            list(GroupedItem.objects.all())
+
+    def test_order_with_respect_to_through_a_null_relation(self):
+        user = TestUser.objects.create()
+        group = ItemGroup.objects.create(user=user)
+        ungrouped1 = NullableGroupedItem.objects.create(group=None)
+        ungrouped2 = NullableGroupedItem.objects.create(group=None)
+        grouped = NullableGroupedItem.objects.create(group=group)
+
+        self.assertEqual([ungrouped1.order, ungrouped2.order], [0, 1])
+        self.assertEqual(grouped.order, 0)
+
+        ungrouped1.delete()
+        ungrouped2.refresh_from_db()
+        self.assertEqual(ungrouped2.order, 0)
+
+    def test_move_keeps_scope_when_the_wrt_value_is_unchanged(self):
+        # group changes but "group__user" does not, so the ordering scope is the same
+        user = TestUser.objects.create()
+        group1 = ItemGroup.objects.create(user=user)
+        group2 = ItemGroup.objects.create(user=user)
+        item1 = GroupedItem.objects.create(group=group1)
+        item2 = GroupedItem.objects.create(group=group1)
+
+        item1.group = group2
+        item1.save()
+
+        item1.refresh_from_db()
+        item2.refresh_from_db()
+        self.assertEqual([item1.order, item2.order], [0, 1])
+
+    def test_to_rolls_back_the_shuffle_when_the_save_fails(self):
+        items = [Item.objects.create(name="item{}".format(i)) for i in range(3)]
+
+        def boom(sender, instance, **kwargs):
+            raise ValueError("boom")
+
+        post_save.connect(boom, sender=Item)
+        try:
+            with self.assertRaises(ValueError):
+                items[2].to(0)
+        finally:
+            post_save.disconnect(boom, sender=Item)
+
+        self.assertSequenceEqual(
+            Item.objects.values_list("name", "order"),
+            [("item0", 0), ("item1", 1), ("item2", 2)],
+        )
+
+
+class OrderedModelAdminPermissionTests(TestCase):
+    def setUp(self):
+        User.objects.create_user(
+            "staff", "s@example.com", "staff", is_staff=True, is_active=True
+        )
+        self.assertTrue(self.client.login(username="staff", password="staff"))
+        self.item1 = Item.objects.create(name="item1")
+        self.item2 = Item.objects.create(name="item2")
+
+        self.pizza = Pizza.objects.create(name="Hawaiian Pizza")
+        self.pizza_to_ham = PizzaToppingsThroughModel.objects.create(
+            pizza=self.pizza, topping=Topping.objects.create(name="Ham")
+        )
+        self.pizza_to_pineapple = PizzaToppingsThroughModel.objects.create(
+            pizza=self.pizza, topping=Topping.objects.create(name="Pineapple")
+        )
+
+    def test_move_denied_without_change_permission(self):
+        res = self.client.get("/admin/tests/item/{}/move-bottom/".format(self.item1.pk))
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(Item.objects.get(pk=self.item1.pk).order, 0)
+
+    def test_inline_move_denied_without_change_permission(self):
+        res = self.client.get(
+            "/admin/tests/pizza/{}/pizzatoppingsthroughmodel/{}/move-bottom/".format(
+                self.pizza.pk, self.pizza_to_ham.pk
+            )
+        )
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(
+            PizzaToppingsThroughModel.objects.get(pk=self.pizza_to_ham.pk).order, 0
+        )
+
+
+class SerializerRegressionTests(TestCase):
+    def test_order_is_not_required_on_create(self):
+        serializer = ItemSerializer(data={"pkid": "a", "name": "A"})
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        item = serializer.save()
+        self.assertEqual(item.order, 0)
+
+    def test_negative_order_is_rejected(self):
+        serializer = ItemSerializer(data={"pkid": "a", "name": "A", "order": -5})
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("order", serializer.errors)
+
+    def test_order_past_the_end_is_clamped(self):
+        CustomItem.objects.create(pkid="a", name="A")
+        item = CustomItem.objects.create(pkid="b", name="B")
+
+        serializer = ItemSerializer(
+            instance=item, data={"pkid": "b", "name": "B", "order": 500}
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        serializer.save()
+
+        self.assertSequenceEqual(
+            CustomItem.objects.values_list("pkid", "order"), [("a", 0), ("b", 1)]
+        )
+
+
+class OrderedManyToManyFieldDescendingTests(TestCase):
+    def test_descending_through_model_ordering(self):
+        pizza = PizzaOM2MDesc.objects.create(name="Hawaiian")
+        ham = Topping.objects.create(name="Ham")
+        pineapple = Topping.objects.create(name="Pineapple")
+        PizzaOM2MDescToppingsThroughModel.objects.create(pizza=pizza, topping=ham)
+        PizzaOM2MDescToppingsThroughModel.objects.create(pizza=pizza, topping=pineapple)
+
+        self.assertSequenceEqual(
+            [t.name for t in pizza.toppings.all()], ["Pineapple", "Ham"]
+        )
+
+
+class ReorderModelCommandRegressionTests(TestCase):
+    def test_batch_size_passed_on_the_command_line(self):
+        OpenQuestion.objects.create(order=0)
+        OpenQuestion.objects.create(order=0)
+
+        call_command(
+            "reorder_model",
+            "tests.OpenQuestion",
+            "--batch_size",
+            "2",
+            verbosity=0,
+            stdout=StringIO(),
+        )
+
+        self.assertSequenceEqual(
+            OpenQuestion.objects.values_list("order", flat=True).order_by("order"),
+            [0, 1],
+        )
+
+    def test_reorders_rows_whose_scope_is_null(self):
+        first = StateMachine.objects.create(name="first")
+        second = StateMachine.objects.create(name="second")
+        # break the ordering behind the model's back
+        StateMachine.objects.filter(pk=second.pk).update(order=7)
+
+        call_command("reorder_model", "tests.StateMachine", verbosity=0)
+
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual([first.order, second.order], [0, 1])

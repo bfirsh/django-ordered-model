@@ -130,6 +130,18 @@ class GroupedItem(OrderedModel):
     order_with_respect_to = "group__user"
 
 
+# test grouping by a foreign model field through a nullable relation
+class NullableGroupedItem(OrderedModel):
+    group = models.ForeignKey(
+        ItemGroup,
+        on_delete=models.CASCADE,
+        related_name="nullable_items",
+        null=True,
+        blank=True,
+    )
+    order_with_respect_to = "group__user"
+
+
 class CascadedParentModel(models.Model):
     pass
 
@@ -164,6 +176,23 @@ class PizzaOM2MToppingsThroughModel(OrderedModel):
         ordering = ("pizza", "order")
 
 
+# same, but with a descending Meta.ordering on the through model
+class PizzaOM2MDesc(models.Model):
+    name = models.CharField(max_length=100)
+    toppings = OrderedManyToManyField(
+        Topping, through="PizzaOM2MDescToppingsThroughModel"
+    )
+
+
+class PizzaOM2MDescToppingsThroughModel(OrderedModel):
+    pizza = models.ForeignKey(PizzaOM2MDesc, on_delete=models.CASCADE)
+    topping = models.ForeignKey(Topping, on_delete=models.CASCADE)
+    order_with_respect_to = "pizza"
+
+    class Meta:
+        ordering = ("pizza", "-order")
+
+
 # issue 298
 class Training(models.Model):
     pass
@@ -183,7 +212,7 @@ class TrainingExercise(OrderedModel, models.Model):
     order_with_respect_to = ("training", "stage")
 
     class Meta:
-        ordering = ("training", "stage")
+        ordering = ("training", "stage", "order")
 
 
 # issue 320 parent/child models

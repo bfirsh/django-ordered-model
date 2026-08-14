@@ -52,8 +52,17 @@ class OrderedModelSerializer(serializers.ModelSerializer):
         for name, field in d.items():
             if name == order_field:
                 if field.read_only:
-                    d[name] = fields.IntegerField()
+                    # not required: leaving the order out means "put it at the end",
+                    # which is what the model does on its own
+                    d[name] = fields.IntegerField(required=False, min_value=0)
         return d
+
+    def _move_to_order(self, instance, order):
+        # a position past the last one would leave a permanent gap in the ordering
+        max_order = instance.get_ordering_queryset().get_max_order()
+        if max_order is not None and order > max_order:
+            order = max_order
+        instance.to(order)
 
     def update(self, instance, validated_data):
         """
@@ -75,7 +84,7 @@ class OrderedModelSerializer(serializers.ModelSerializer):
         instance = super().update(instance, validated_data)
 
         if order is not None:
-            instance.to(order)
+            self._move_to_order(instance, order)
 
         return instance
 
@@ -98,6 +107,6 @@ class OrderedModelSerializer(serializers.ModelSerializer):
         instance = super().create(validated_data)
 
         if order is not None:
-            instance.to(order)
+            self._move_to_order(instance, order)
 
         return instance

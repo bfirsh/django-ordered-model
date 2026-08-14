@@ -1,5 +1,6 @@
 from functools import update_wrapper
 
+from django.core.exceptions import PermissionDenied
 from django.http import HttpResponseRedirect, Http404
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
@@ -80,6 +81,11 @@ class OrderedModelAdmin(BaseOrderedModelAdmin, admin.ModelAdmin):
 
     def move_view(self, request, object_id, direction):
         obj = get_object_or_404(self.model, pk=unquote(object_id))
+
+        # admin_view() only checks that the user is active staff, reordering is a
+        # change of the object and needs the change permission for it
+        if not self.has_change_permission(request, obj):
+            raise PermissionDenied
 
         if direction not in ("up", "down", "top", "bottom"):
             raise Http404
@@ -187,6 +193,12 @@ class OrderedInlineMixin(BaseOrderedModelAdmin):
 
     def move_view(self, request, admin_id, object_id, direction):
         obj = get_object_or_404(self.model, pk=unquote(object_id))
+        parent_obj = get_object_or_404(self.parent_model, pk=unquote(admin_id))
+
+        # admin_view() only checks that the user is active staff, reordering is a
+        # change of the inline object and needs the change permission for it
+        if not self.has_change_permission(request, parent_obj):
+            raise PermissionDenied
 
         if direction not in ("up", "down", "top", "bottom"):
             raise Http404
