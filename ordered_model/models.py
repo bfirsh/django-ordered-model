@@ -273,11 +273,7 @@ class OrderedModelBase(models.Model):
         # the order field was just (re)computed, so it has to be written out even
         # when the caller restricted the write with update_fields
         order_field_name = self.order_field_name
-        if len(args) >= 4 and args[3] is not None:
-            args = list(args)
-            args[3] = frozenset(args[3]) | {order_field_name}
-            args = tuple(args)
-        elif kwargs.get("update_fields") is not None:
+        if kwargs.get("update_fields") is not None:
             kwargs["update_fields"] = frozenset(kwargs["update_fields"]) | {
                 order_field_name
             }

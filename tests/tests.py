@@ -17,7 +17,6 @@ from django import VERSION
 from rest_framework.test import APIRequestFactory, APITestCase
 from rest_framework import status
 from tests.drf import ItemSerializer, ItemViewSet, router
-from tests.utils import assertNumQueries
 
 from ordered_model.models import OrderedModel, OrderedModelManager, OrderedModelQuerySet
 
@@ -182,7 +181,7 @@ class OrderWithRespectToTests(TestCase):
         self.q1_a2 = q1.answers.create(user=u0)
         self.q2_a2 = q2.answers.create(user=u0)
 
-        with assertNumQueries(self, 1):
+        with self.assertNumQueries(1):
             Answer.objects.get(id=self.q1_a1.id)
 
     def test_saved_order(self):
@@ -324,12 +323,12 @@ class OrderWithRespectToReorderTests(TestCase):
         self.u1_a2 = q1.answers.create(user=self.u1)
         self.u1_a3 = q1.answers.create(user=self.u1)
 
-        with assertNumQueries(self, 1):
+        with self.assertNumQueries(1):
             Answer.objects.get(id=self.u0_a1.id)
 
     def test_reorder_when_field_value_changed(self):
         self.u0_a2.user = self.u1
-        with assertNumQueries(self, 3):
+        with self.assertNumQueries(3):
             self.u0_a2.save()
 
         self.assertSequenceEqual(
@@ -711,7 +710,7 @@ class OrderWithRespectToTestsManyToMany(TestCase):
         )  # tomatoe, mozarella, mushrooms, ham
         # Now put the toppings on the pizza
         self.p1_t1 = PizzaToppingsThroughModel(pizza=self.p1, topping=self.t1)
-        with assertNumQueries(self, 2):
+        with self.assertNumQueries(2):
             self.p1_t1.save()
 
         self.p1_t2 = PizzaToppingsThroughModel(pizza=self.p1, topping=self.t2)
@@ -1826,7 +1825,7 @@ class RegressionTests(TestCase):
             GroupedItem.objects.create(group=group)
 
         # loading the rows must not resolve the "group__user" path per instance
-        with assertNumQueries(self, 1):
+        with self.assertNumQueries(1):
             list(GroupedItem.objects.all())
 
     def test_order_with_respect_to_through_a_null_relation(self):

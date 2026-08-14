@@ -11,7 +11,6 @@ from django.contrib import admin
 from django.contrib.admin.utils import unquote
 from django.contrib.admin.options import csrf_protect_m
 from django.contrib.admin.views.main import ChangeList
-from django import VERSION
 
 
 class BaseOrderedModelAdmin:
@@ -28,7 +27,7 @@ class BaseOrderedModelAdmin:
         list_display = self.get_list_display(request)
         list_display_links = self.get_list_display_links(request, list_display)
 
-        args = (
+        return ChangeList(
             request,
             self.model,
             list_display,
@@ -41,15 +40,9 @@ class BaseOrderedModelAdmin:
             self.list_max_show_all,
             self.list_editable,
             self,
+            self.sortable_by,
+            self.search_help_text,
         )
-
-        if VERSION >= (2, 1):
-            args = args + (self.sortable_by,)
-
-        if VERSION >= (4, 0):
-            args = args + (self.search_help_text,)
-
-        return ChangeList(*args)
 
     @csrf_protect_m
     def changelist_view(self, request, extra_context=None):

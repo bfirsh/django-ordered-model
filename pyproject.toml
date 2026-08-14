@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "django-ordered-model"
+version = "4.0.0a0"
+description = "Allows Django models to be ordered and provides a simple admin interface for reordering them."
+readme = { file = "README.md", content-type = "text/markdown" }
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "Ben Firshman", email = "ben@firshman.co.uk" }]
+requires-python = ">=3.10"
+dependencies = ["Django>=5.2"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Framework :: Django",
+    "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: BSD License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+[project.optional-dependencies]
+rest = ["djangorestframework>=3.16"]
+
+[project.urls]
+Homepage = "http://github.com/django-ordered-model/django-ordered-model"
+Changelog = "https://github.com/django-ordered-model/django-ordered-model/blob/master/CHANGES.md"
+
+[tool.setuptools]
+zip-safe = false
+
+[tool.setuptools.packages.find]
+include = ["ordered_model*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+ordered_model = [
+    "static/ordered_model/*.gif",
+    "locale/*/LC_MESSAGES/*.po",
+    "locale/*/LC_MESSAGES/*.mo",
+    "templates/ordered_model/admin/*.html",
+]

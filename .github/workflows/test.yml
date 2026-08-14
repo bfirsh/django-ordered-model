@@ -7,15 +7,10 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.5, 3.6, 3.7, 3.8, 3.9, '3.10', '3.11', '3.12']
-        include:
-          - pip-trusted-host: ''
-          # Relax security checks for Python 3.5 only. (https://github.com/actions/setup-python/issues/866)
-          - python-version: '3.5'
-            pip-trusted-host: 'pypi.python.org pypi.org files.pythonhosted.org'
+        python-version: ['3.10', '3.11', '3.12', '3.13']
     steps:
     - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
@@ -23,7 +18,6 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
       env:
-        PIP_TRUSTED_HOST: ${{ matrix.pip-trusted-host }}
         PIP_DISABLE_PIP_VERSION_CHECK: 1
     - name: Install dependencies
       run: |
