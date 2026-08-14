@@ -1,6 +1,34 @@
 Change log
 ==========
 
+4.0.0
+----------
+
+Backwards incompatible changes:
+
+- Drop support for Django 2.2 to 5.1 and Python 3.5 to 3.9. Django 5.2 and Python 3.10 are now the minimum; stay on 3.7.x/3.8.x for older releases
+- The admin move controls are now submit buttons and the move views accept `POST` only. They previously changed data over `GET` without a CSRF token, so any page a logged in admin visited could reorder their data. Overridden copies of `order_controls.html`, and hand-built move URLs, need updating
+- The admin move views now require the change permission on the model. `admin_site.admin_view()` only checks that the user is active staff, so any staff account could reorder any ordered model
+- A `Meta.ordering` that does not include the order field is now the error `ordered_model.E007` instead of passing unnoticed. Field names are read out of `F()` and `OrderBy` expressions as well as strings
+- `OrderedModelSerializer` no longer marks the order field as required, so a create without an order appends as the model does by itself
+
+Fixes:
+
+- `save(update_fields=...)` no longer drops the order recomputed when an object moves to another `order_with_respect_to` group, which left duplicate order values behind
+- `OrderedModelSerializer` rejects a negative order and clamps a position past the end, which used to raise an `IntegrityError` or leave a permanent gap
+- `top()` and `bottom()` on an empty ordering group no longer raise `TypeError`
+- An `order_with_respect_to` path through a nullable relation no longer raises `AttributeError`
+- `order_with_respect_to` paths are no longer resolved on every model instantiation, which cost a query per row for paths through a relation
+- `save()`, `delete()`, `to()` and `swap()` re-number inside a transaction
+- `OrderedManyToManyField` supports a descending `Meta.ordering` on the through model, which used to build an invalid `through__-order` lookup
+- `reorder_model` accepts `--batch_size` on the command line, re-orders groups whose `order_with_respect_to` value is NULL, and skips an unknown model name instead of abandoning the models after it
+- The changelist query string is kept in a `ContextVar` rather than on the `ModelAdmin`, which is shared between concurrent requests
+
+Packaging:
+
+- Replace `setup.py` and `requirements.txt` with `pyproject.toml`. `setup.py` declared its dependencies with `requires=`, which setuptools ignores, so the Django dependency was never installed, and without `python_requires` pip would install the package on any Python version. DRF is now the `rest` extra
+
+
 3.8.0
 ----------
 - Fix `post_delete` signal triggered upshuffles to do a potentially expensive full reordering of the owrt group (#307)

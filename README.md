@@ -25,7 +25,7 @@ $ pip install django-ordered-model
 Or if you have checked out the repository:
 
 ```bash
-$ python setup.py install
+$ pip install .
 ```
 
 Or to use the latest development code from our master branch:
@@ -212,6 +212,8 @@ Here items are put into groups that have some general information used by its it
 
 In all cases `order_with_respect_to` must specify a `ForeignKey` field on the model, or a Django Check `E002`, `E005` or `E006` error will be raised with further help.
 
+Whichever `Meta.ordering` you use, it must include the order field itself, last, after any `order_with_respect_to` fields, or the Django Check `E007` error is raised. Without it the rows inside an ordering group come back in an arbitrary database order, and moving or re-numbering them then operates on an undefined sequence.
+
 When you want ordering on the baseclass instead of subclasses in an ordered list of objects of various classes, specify the full module path of the base class:
 
 ```python
@@ -325,6 +327,11 @@ admin.site.register(Item, ItemAdmin)
 ```
 
 ![ItemAdmin screenshot](./static/items.png)
+
+The arrows are submit buttons that post to the move views through the surrounding
+admin form, which supplies the CSRF token. Reordering is refused over `GET`, so if
+you render `move_up_down_links` outside of the admin changelist or change form, put
+it inside a `<form method="post">` that includes `{% csrf_token %}`.
 
 
 For a many-to-many relationship you need one of the following inlines.
@@ -441,7 +448,7 @@ $ django-admin test --pythonpath=. --settings=tests.settings
 Otherwise please install `tox` and run the tests for a specific environment with `-e` or all environments:
 
 ```bash
-$ tox -e py36-django30
+$ tox -e py312-django52
 $ tox
 ```
 
@@ -450,6 +457,7 @@ Compatibility with Django and Python
 
 |django-ordered-model version | Django version      | Python version    | DRF (optional)
 |-----------------------------|---------------------|-------------------|----------------
+| **4.0.x**                   | **5.2**, **6.x**    | **3.10** to **3.13** | 3.16 and above
 | **3.8.x**                   | **3.x**, **4.x**, **5.x** | **3.10** to **3.12** | 3.15 and above
 | **3.7.x**                   | **3.x**, **4.x**    | **3.5** and above | 3.12 and above
 | **3.6.x**                   | **3.x**, **4.x**    | **3.5** and above | 3.12 and above
