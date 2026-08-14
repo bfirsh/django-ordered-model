@@ -1,7 +1,8 @@
+import contextvars
 from functools import update_wrapper
 
 from django.core.exceptions import PermissionDenied
-from django.http import HttpResponseRedirect, Http404
+from django.http import HttpResponseRedirect, HttpResponseNotAllowed, Http404
 from django.shortcuts import get_object_or_404
 from django.urls import reverse
 from django.utils.encoding import escape_uri_path, iri_to_uri
@@ -12,13 +13,22 @@ from django.contrib.admin.utils import unquote
 from django.contrib.admin.options import csrf_protect_m
 from django.contrib.admin.views.main import ChangeList
 
+# the changelist query string of the request being rendered. A ModelAdmin is
+# instantiated once at registration and shared by every request, so this cannot be
+# kept on the instance without leaking one request's filters into another's links.
+_request_query_string = contextvars.ContextVar(
+    "ordered_model_request_query_string", default=""
+)
+
 
 class BaseOrderedModelAdmin:
     """
     Functionality common to both OrderedModelAdmin and OrderedInlineMixin.
     """
 
-    request_query_string = ""
+    @property
+    def request_query_string(self):
+        return _request_query_string.get()
 
     def _get_model_info(self):
         return {"app": self.model._meta.app_label, "model": self.model._meta.model_name}
@@ -47,8 +57,11 @@ class BaseOrderedModelAdmin:
     @csrf_protect_m
     def changelist_view(self, request, extra_context=None):
         cl = self._get_changelist(request)
-        self.request_query_string = cl.get_query_string()
-        return super().changelist_view(request, extra_context)
+        token = _request_query_string.set(cl.get_query_string())
+        try:
+            return super().changelist_view(request, extra_context)
+        finally:
+            _request_query_string.reset(token)
 
 
 class OrderedModelAdmin(BaseOrderedModelAdmin, admin.ModelAdmin):
@@ -72,16 +85,22 @@ class OrderedModelAdmin(BaseOrderedModelAdmin, admin.ModelAdmin):
             )
         ] + super().get_urls()
 
+    @csrf_protect_m
     def move_view(self, request, object_id, direction):
+        if direction not in ("up", "down", "top", "bottom"):
+            raise Http404
+
+        # reordering changes data, so it must not be reachable by a GET a third
+        # party site can trigger
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+
         obj = get_object_or_404(self.model, pk=unquote(object_id))
 
         # admin_view() only checks that the user is active staff, reordering is a
         # change of the object and needs the change permission for it
         if not self.has_change_permission(request, obj):
             raise PermissionDenied
-
-        if direction not in ("up", "down", "top", "bottom"):
-            raise Http404
 
         getattr(obj, direction)()
 
@@ -184,7 +203,16 @@ class OrderedInlineMixin(BaseOrderedModelAdmin):
             )
         ]
 
+    @csrf_protect_m
     def move_view(self, request, admin_id, object_id, direction):
+        if direction not in ("up", "down", "top", "bottom"):
+            raise Http404
+
+        # reordering changes data, so it must not be reachable by a GET a third
+        # party site can trigger
+        if request.method != "POST":
+            return HttpResponseNotAllowed(["POST"])
+
         obj = get_object_or_404(self.model, pk=unquote(object_id))
         parent_obj = get_object_or_404(self.parent_model, pk=unquote(admin_id))
 
@@ -192,9 +220,6 @@ class OrderedInlineMixin(BaseOrderedModelAdmin):
         # change of the inline object and needs the change permission for it
         if not self.has_change_permission(request, parent_obj):
             raise PermissionDenied
-
-        if direction not in ("up", "down", "top", "bottom"):
-            raise Http404
 
         getattr(obj, direction)()
 

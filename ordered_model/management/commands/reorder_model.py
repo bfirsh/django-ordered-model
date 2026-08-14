@@ -34,7 +34,7 @@ class Command(BaseCommand):
                         model_name, candidates
                     )
                 )
-                break
+                continue
             model = apps.get_model(model_name)
             if not issubclass(model, OrderedModelBase):
                 raise CommandError(

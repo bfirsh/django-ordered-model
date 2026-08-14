@@ -603,6 +603,20 @@ class OrderedModelAdminTest(TestCase):
         self.assertIn("/admin/tests/item/1/move-top/", str(res.content))
         self.assertIn("/admin/tests/item/1/move-bottom/", str(res.content))
 
+    def test_move_rejects_get(self):
+        # a state changing GET could be triggered by any third party page
+        res = self.client.get("/admin/tests/item/1/move-down/")
+        self.assertEqual(res.status_code, 405)
+        self.assertEqual(Item.objects.get(name="item1").order, 0)
+
+    def test_inline_move_rejects_get(self):
+        res = self.client.get(
+            "/admin/tests/pizza/{}/pizzatoppingsthroughmodel/{}/move-up/".format(
+                self.pizza.id, self.pizza_to_pineapple.id
+            )
+        )
+        self.assertEqual(res.status_code, 405)
+
     def test_move_invalid_direction(self):
         res = self.client.get("/admin/tests/item/1/move-middle/")
         self.assertEqual(res.status_code, 404)
@@ -610,7 +624,7 @@ class OrderedModelAdminTest(TestCase):
     def test_move_down(self):
         self.assertEqual(Item.objects.get(name="item1").order, 0)
         self.assertEqual(Item.objects.get(name="item2").order, 1)
-        res = self.client.get("/admin/tests/item/1/move-down/")
+        res = self.client.post("/admin/tests/item/1/move-down/")
         self.assertRedirects(res, "/admin/tests/item/")
         self.assertEqual(Item.objects.get(name="item1").order, 1)
         self.assertEqual(Item.objects.get(name="item2").order, 0)
@@ -618,7 +632,7 @@ class OrderedModelAdminTest(TestCase):
     def test_move_up(self):
         self.assertEqual(Item.objects.get(name="item1").order, 0)
         self.assertEqual(Item.objects.get(name="item2").order, 1)
-        res = self.client.get("/admin/tests/item/2/move-up/")
+        res = self.client.post("/admin/tests/item/2/move-up/")
         self.assertRedirects(res, "/admin/tests/item/")
         self.assertEqual(Item.objects.get(name="item1").order, 1)
         self.assertEqual(Item.objects.get(name="item2").order, 0)
@@ -627,7 +641,7 @@ class OrderedModelAdminTest(TestCase):
         self.assertEqual(Item.objects.get(name="item1").order, 0)
         self.assertEqual(Item.objects.get(name="item2").order, 1)
         self.assertEqual(Item.objects.get(name="item3").order, 2)
-        res = self.client.get("/admin/tests/item/3/move-top/")
+        res = self.client.post("/admin/tests/item/3/move-top/")
         self.assertRedirects(res, "/admin/tests/item/")
         self.assertEqual(Item.objects.get(name="item1").order, 1)
         self.assertEqual(Item.objects.get(name="item2").order, 2)
@@ -637,7 +651,7 @@ class OrderedModelAdminTest(TestCase):
         self.assertEqual(Item.objects.get(name="item1").order, 0)
         self.assertEqual(Item.objects.get(name="item2").order, 1)
         self.assertEqual(Item.objects.get(name="item3").order, 2)
-        res = self.client.get("/admin/tests/item/1/move-bottom/")
+        res = self.client.post("/admin/tests/item/1/move-bottom/")
         self.assertRedirects(res, "/admin/tests/item/")
         self.assertEqual(Item.objects.get(name="item1").order, 2)
         self.assertEqual(Item.objects.get(name="item2").order, 0)
@@ -654,13 +668,13 @@ class OrderedModelAdminTest(TestCase):
         res = self.client.get("/admin/tests/pizza/{}/change/".format(self.pizza.id))
         self.assertContains(
             res,
-            text='<a href="/admin/tests/pizza/{}/pizzatoppingsthroughmodel/{}/move-up/">'.format(
+            text='formaction="/admin/tests/pizza/{}/pizzatoppingsthroughmodel/{}/move-up/"'.format(
                 self.pizza.id, self.pizza_to_ham.id
             ),
         )
         self.assertContains(
             res,
-            text='<a href="/admin/tests/pizza/{}/pizzatoppingsthroughmodel/{}/move-up/">'.format(
+            text='formaction="/admin/tests/pizza/{}/pizzatoppingsthroughmodel/{}/move-up/"'.format(
                 self.pizza.id, self.pizza_to_pineapple.id
             ),
         )
@@ -668,7 +682,7 @@ class OrderedModelAdminTest(TestCase):
         # click the move-up link
         self.assertEqual(self.pizza_to_ham.order, 0)
         self.assertEqual(self.pizza_to_pineapple.order, 1)
-        res = self.client.get(
+        res = self.client.post(
             "/admin/tests/pizza/{}/pizzatoppingsthroughmodel/{}/move-up/".format(
                 self.pizza.id, self.pizza_to_pineapple.id
             ),
@@ -691,7 +705,7 @@ class OrderedModelAdminTest(TestCase):
         )
         self.assertContains(
             res,
-            text='<a href="/admin/tests/pizzaproxy/{}/pizzatoppingsthroughmodel/{}/move-up/">'.format(
+            text='formaction="/admin/tests/pizzaproxy/{}/pizzatoppingsthroughmodel/{}/move-up/"'.format(
                 self.pizza.id, self.pizza_to_ham.id
             ),
         )
@@ -1184,11 +1198,11 @@ class OrderedModelAdminWithCustomPKInlineTest(TestCase):
         # Check move up/down links
         self.assertContains(
             res,
-            text='<a href="/admin/tests/custompkgroup/1/custompkgroupitem/g1%20i1/move-up/">',
+            text='formaction="/admin/tests/custompkgroup/1/custompkgroupitem/g1%20i1/move-up/"',
         )
         self.assertContains(
             res,
-            text='<a href="/admin/tests/custompkgroup/1/custompkgroupitem/g1%20i1/move-down/">',
+            text='formaction="/admin/tests/custompkgroup/1/custompkgroupitem/g1%20i1/move-down/"',
         )
 
 
@@ -1536,14 +1550,32 @@ class ChecksTest(SimpleTestCase):
         self.assertEqual(
             checks.run_checks(app_configs=self.apps.get_app_configs()),
             [
-                checks.Warning(
-                    msg="OrderedModelBase subclass Meta.ordering does not include the order field 'order'. Rows within an ordering scope are then returned in an arbitrary order, so moving and re-numbering operations act on an undefined sequence.",
+                checks.Error(
+                    msg="OrderedModelBase subclass Meta.ordering does not include the order field 'order'. Rows within an ordering group are then returned in an arbitrary order, so moving and re-numbering operations act on an undefined sequence.",
                     hint="Add 'order' to Meta.ordering, usually as the last entry.",
                     obj="ChecksTest.test_ordering_without_the_order_field.<locals>.TestModel3",
-                    id="ordered_model.W007",
+                    id="ordered_model.E007",
                 )
             ],
         )
+
+    def test_ordering_by_an_expression_is_accepted(self):
+        # the order field cannot be read out of every expression, so an ordering
+        # that we cannot inspect must not be reported as broken
+        class TestModel4(OrderedModel):
+            name = models.CharField(max_length=100)
+
+            class Meta:
+                ordering = (models.functions.Lower("name"),)
+
+        self.assertEqual(checks.run_checks(app_configs=self.apps.get_app_configs()), [])
+
+    def test_ordering_by_an_order_field_expression(self):
+        class TestModel5(OrderedModel):
+            class Meta:
+                ordering = (models.F("order").desc(),)
+
+        self.assertEqual(checks.run_checks(app_configs=self.apps.get_app_configs()), [])
 
     def test_bad_owrt(self):
         class TestModel(OrderedModel):
@@ -1894,12 +1926,14 @@ class OrderedModelAdminPermissionTests(TestCase):
         )
 
     def test_move_denied_without_change_permission(self):
-        res = self.client.get("/admin/tests/item/{}/move-bottom/".format(self.item1.pk))
+        res = self.client.post(
+            "/admin/tests/item/{}/move-bottom/".format(self.item1.pk)
+        )
         self.assertEqual(res.status_code, 403)
         self.assertEqual(Item.objects.get(pk=self.item1.pk).order, 0)
 
     def test_inline_move_denied_without_change_permission(self):
-        res = self.client.get(
+        res = self.client.post(
             "/admin/tests/pizza/{}/pizzatoppingsthroughmodel/{}/move-bottom/".format(
                 self.pizza.pk, self.pizza_to_ham.pk
             )

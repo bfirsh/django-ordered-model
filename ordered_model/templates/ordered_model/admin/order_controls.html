@@ -1,9 +1,18 @@
-{% load static %}
-<a href="{{ urls.top }}{{query_string}}">
-    <img src="{% static 'ordered_model/arrow-top.gif' %}"></a>
-<a href="{{ urls.up }}{{query_string}}">
-    <img src="{% static 'ordered_model/arrow-up.gif' %}"></a>
-<a href="{{ urls.down }}{{query_string}}">
-    <img src="{% static 'ordered_model/arrow-down.gif' %}"></a>
-<a href="{{ urls.bottom }}{{query_string}}">
-    <img src="{% static 'ordered_model/arrow-bottom.gif' %}"></a>
+{% load static %}{% comment %}
+Reordering changes data, so it is served over POST only. These are submit buttons
+for the surrounding admin form (the changelist form, or the change form for an
+inline), which carries the CSRF token: a nested <form> element would be invalid
+HTML here and browsers would drop it.
+{% endcomment %}
+<button type="submit" formmethod="post" formaction="{{ urls.top }}{{ query_string }}"
+    class="ordered-model-move" style="background:none;border:0;padding:0;cursor:pointer">
+    <img src="{% static 'ordered_model/arrow-top.gif' %}" alt="top"></button>
+<button type="submit" formmethod="post" formaction="{{ urls.up }}{{ query_string }}"
+    class="ordered-model-move" style="background:none;border:0;padding:0;cursor:pointer">
+    <img src="{% static 'ordered_model/arrow-up.gif' %}" alt="up"></button>
+<button type="submit" formmethod="post" formaction="{{ urls.down }}{{ query_string }}"
+    class="ordered-model-move" style="background:none;border:0;padding:0;cursor:pointer">
+    <img src="{% static 'ordered_model/arrow-down.gif' %}" alt="down"></button>
+<button type="submit" formmethod="post" formaction="{{ urls.bottom }}{{ query_string }}"
+    class="ordered-model-move" style="background:none;border:0;padding:0;cursor:pointer">
+    <img src="{% static 'ordered_model/arrow-bottom.gif' %}" alt="bottom"></button>

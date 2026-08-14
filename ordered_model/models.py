@@ -35,6 +35,22 @@ def get_lookup_value(obj, wrt_field, use_fkid=True):
         return None
 
 
+def get_ordering_field_names(ordering):
+    # field names referenced by a Meta.ordering, or None when an entry is an
+    # expression we cannot read a field name out of
+    names = []
+    for entry in ordering:
+        if isinstance(entry, str):
+            names.append(entry.lstrip("-"))
+            continue
+        # eg. F("order") or F("order").desc(), which wraps the F in an OrderBy
+        name = getattr(getattr(entry, "expression", entry), "name", None)
+        if name is None:
+            return None
+        names.append(name)
+    return names
+
+
 class OrderedModelQuerySet(models.QuerySet):
     def _get_order_field_name(self):
         return self.model.order_field_name
@@ -447,21 +463,21 @@ class OrderedModelBase(models.Model):
                     id="ordered_model.E001",
                 )
             )
-        elif cls.order_field_name and cls.order_field_name not in [
-            f.lstrip("-") for f in ordering if isinstance(f, str)
-        ]:
-            errors.append(
-                checks.Warning(
-                    "OrderedModelBase subclass Meta.ordering does not include the order field '{0}'. Rows within an ordering scope are then returned in an arbitrary order, so moving and re-numbering operations act on an undefined sequence.".format(
-                        cls.order_field_name
-                    ),
-                    hint="Add '{0}' to Meta.ordering, usually as the last entry.".format(
-                        cls.order_field_name
-                    ),
-                    obj=str(cls.__qualname__),
-                    id="ordered_model.W007",
+        elif cls.order_field_name:
+            names = get_ordering_field_names(ordering)
+            if names is not None and cls.order_field_name not in names:
+                errors.append(
+                    checks.Error(
+                        "OrderedModelBase subclass Meta.ordering does not include the order field '{0}'. Rows within an ordering group are then returned in an arbitrary order, so moving and re-numbering operations act on an undefined sequence.".format(
+                            cls.order_field_name
+                        ),
+                        hint="Add '{0}' to Meta.ordering, usually as the last entry.".format(
+                            cls.order_field_name
+                        ),
+                        obj=str(cls.__qualname__),
+                        id="ordered_model.E007",
+                    )
                 )
-            )
         owrt = getattr(cls, "order_with_respect_to")
         if not (type(owrt) is tuple or type(owrt) is str or owrt is None):
             errors.append(
